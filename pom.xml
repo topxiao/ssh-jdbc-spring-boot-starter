@@ -13,7 +13,7 @@
 
     <groupId>com.github.topxiao</groupId>
     <artifactId>ssh-jdbc-spring-boot-starter</artifactId>
-    <version>0.2.0-SNAPSHOT</version>
+    <version>0.3.0</version>
     <packaging>jar</packaging>
     <name>ssh-jdbc-spring-boot-starter</name>
     <description>Spring Boot Starter for JDBC access through SSH tunnels</description>
