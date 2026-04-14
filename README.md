@@ -14,11 +14,20 @@ Spring Boot Starter for JDBC access through SSH tunnels.
 
 ### 1. Add dependency
 
+Add JitPack repository and dependency (no authentication required):
+
 ```xml
+<repositories>
+    <repository>
+        <id>jitpack.io</id>
+        <url>https://jitpack.io</url>
+    </repository>
+</repositories>
+
 <dependency>
     <groupId>com.github.topxiao</groupId>
     <artifactId>ssh-jdbc-spring-boot-starter</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>v0.1.0</version>
 </dependency>
 ```
 
