@@ -89,6 +89,86 @@ public class MyProvider implements ConnectionInfoProvider {
 }
 ```
 
+## 运行时动态数据源
+
+### 动态注册/注销
+
+```java
+@Autowired
+private SshJdbcRegistry registry;
+
+// 动态注册
+ConnectionInfo info = new ConnectionInfo("10.0.3.100", 5432, "newdb", "user", "pass");
+registry.register("dynamic1", info);
+
+// 使用
+SshJdbcTemplate template = registry.getTemplate("dynamic1");
+
+// 动态注销
+registry.unregister("dynamic1");
+
+// 刷新 Provider
+registry.refresh();
+```
+
+### 上下文驱动
+
+通过 `ExecutionContext` + `ConnectionInfoResolver` 自动解析数据源：
+
+```java
+// 1. 实现 Resolver
+@Component
+public class CorpDatabaseResolver implements ConnectionInfoResolver {
+    @Override
+    public ConnectionInfo resolve(ExecutionContext ctx) {
+        String corpCode = ctx.getCorpCode();
+        if (corpCode == null) return null;
+        // 根据 corpCode 查库/查配置返回 ConnectionInfo
+        return new ConnectionInfo(host, port, database, user, password);
+    }
+}
+
+// 2. 使用
+ExecutionContext.builder()
+    .corpCode("midea")
+    .put("env", "v4")
+    .apply();
+
+// 自动解析数据源并查询
+List<Map<String, Object>> rows = SshJdbc.queryForList(
+    "SELECT * FROM users WHERE org = :org",
+    Map.of("org", "engineering"));
+
+// 或者直接传入完整连接参数
+ExecutionContext.builder()
+    .dbHost("10.0.1.100").dbPort(5432)
+    .dbDatabase("mydb").dbUser("postgres").dbPassword("secret")
+    .apply();
+
+List<Map<String, Object>> rows = SshJdbc.queryForList("SELECT * FROM t", Map.of());
+```
+
+### ExecutionContext API
+
+| 方法 | 说明 |
+|------|------|
+| `ExecutionContext.builder().corpCode(x).apply()` | 设置逻辑标识 |
+| `ExecutionContext.builder().put(key, value).apply()` | 设置扩展属性 |
+| `ExecutionContext.builder().dbHost(x).dbPort(n)...apply()` | 设置完整连接参数 |
+| `ExecutionContext.clear()` | 清除当前线程上下文 |
+| `ctx.hasFullConnectionInfo()` | 是否有完整连接参数 |
+
+### SshJdbc 静态方法
+
+| 方法 | 说明 |
+|------|------|
+| `SshJdbc.queryForList(sql, params)` | 上下文自动解析 + 查询 |
+| `SshJdbc.queryForMap(sql, params)` | 上下文自动解析 + 单行查询 |
+| `SshJdbc.queryForObject(sql, params, type)` | 上下文自动解析 + 单值查询 |
+| `SshJdbc.update(sql, params)` | 上下文自动解析 + 更新 |
+| `SshJdbc.execute(sql)` | 上下文自动解析 + 执行 DDL |
+| `SshJdbc.getTemplate(name)` | 按名称获取模板 |
+
 ## 自定义 DataSource
 
 实现 `DataSourceCustomizer` 接口，自定义每个数据源的 DataSource 构建（如连接池配置）：
