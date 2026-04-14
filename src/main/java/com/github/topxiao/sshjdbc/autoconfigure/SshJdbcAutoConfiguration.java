@@ -35,20 +35,20 @@ import java.util.Map;
 @ConditionalOnProperty(prefix = "ssh-jdbc.tunnel", name = "host")
 public class SshJdbcAutoConfiguration {
 
-    @Bean
+    @Bean("sshJdbcTunnelProperties")
     @ConfigurationProperties(prefix = "ssh-jdbc.tunnel")
-    public SshTunnelProperties sshTunnelProperties() {
+    public SshTunnelProperties sshJdbcTunnelProperties() {
         return new SshTunnelProperties();
     }
 
-    @Bean
+    @Bean("sshJdbcDataSourceProperties")
     @ConfigurationProperties(prefix = "ssh-jdbc")
-    public SshDataSourceProperties sshDataSourceProperties() {
+    public SshDataSourceProperties sshJdbcDataSourceProperties() {
         return new SshDataSourceProperties();
     }
 
     @Bean
-    public SshTunnelService sshTunnelService(SshTunnelProperties props) {
+    public SshTunnelService sshJdbcTunnelService(SshTunnelProperties props) {
         SshTunnelService service = new SshTunnelService(props);
         service.init();
         return service;
@@ -58,7 +58,7 @@ public class SshJdbcAutoConfiguration {
     public SshJdbcRegistry sshJdbcRegistry(
             SshTunnelProperties tunnelProps,
             SshDataSourceProperties dataSourceProps,
-            SshTunnelService tunnelService,
+            SshTunnelService sshJdbcTunnelService,
             ObjectProvider<ConnectionInfoProvider> providerOpt,
             ObjectProvider<DataSourceCustomizer> customizerOpt) {
 
@@ -95,7 +95,7 @@ public class SshJdbcAutoConfiguration {
             String name = entry.getKey();
             ConnectionInfo info = entry.getValue();
 
-            SshJdbcTemplate template = createTemplate(name, info, tunnelService, customizer);
+            SshJdbcTemplate template = createTemplate(name, info, sshJdbcTunnelService, customizer);
             registry.register(name, template);
             log.info("已注册 SshJdbcTemplate: {}", name);
         }
