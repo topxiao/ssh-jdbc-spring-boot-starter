@@ -1,5 +1,7 @@
 package com.github.topxiao.sshjdbc.autoconfigure;
 
+import com.github.topxiao.sshjdbc.context.ConnectionInfoResolver;
+import com.github.topxiao.sshjdbc.context.SshJdbc;
 import com.github.topxiao.sshjdbc.context.SshJdbcRegistry;
 import com.github.topxiao.sshjdbc.jdbc.DataSourceCustomizer;
 import com.github.topxiao.sshjdbc.jdbc.SshJdbcTemplate;
@@ -18,6 +20,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
 import javax.sql.DataSource;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -60,7 +63,14 @@ public class SshJdbcAutoConfiguration {
             SshDataSourceProperties dataSourceProps,
             SshTunnelService sshJdbcTunnelService,
             ObjectProvider<ConnectionInfoProvider> providerOpt,
-            ObjectProvider<DataSourceCustomizer> customizerOpt) {
+            ObjectProvider<DataSourceCustomizer> customizerOpt,
+            ObjectProvider<List<ConnectionInfoResolver>> resolversOpt) {
+
+        DataSourceCustomizer customizer = customizerOpt.getIfAvailable();
+        ConnectionInfoProvider provider = providerOpt.getIfAvailable();
+
+        SshJdbcRegistry registry = new SshJdbcRegistry(
+                sshJdbcTunnelService, customizer, provider);
 
         // 1. Collect yml static datasources
         Map<String, ConnectionInfo> merged = new LinkedHashMap<>();
@@ -73,7 +83,7 @@ public class SshJdbcAutoConfiguration {
         }
 
         // 2. Merge dynamic datasources (if ConnectionInfoProvider bean exists)
-        providerOpt.ifAvailable(provider -> {
+        if (provider != null) {
             Map<String, ConnectionInfo> dynamic = provider.provide();
             if (dynamic != null) {
                 for (Map.Entry<String, ConnectionInfo> entry : dynamic.entrySet()) {
@@ -85,53 +95,45 @@ public class SshJdbcAutoConfiguration {
                     }
                 }
             }
-        });
+        }
 
-        // 3. Create tunnel + SshJdbcTemplate for each datasource
-        SshJdbcRegistry registry = new SshJdbcRegistry();
-        DataSourceCustomizer customizer = customizerOpt.getIfAvailable();
-
+        // 3. Register all merged datasources
         for (Map.Entry<String, ConnectionInfo> entry : merged.entrySet()) {
             String name = entry.getKey();
             ConnectionInfo info = entry.getValue();
 
-            SshJdbcTemplate template = createTemplate(name, info, sshJdbcTunnelService, customizer);
-            registry.register(name, template);
-            log.info("已注册 SshJdbcTemplate: {}", name);
+            try {
+                int localPort = sshJdbcTunnelService.createOrGetTunnel(info.host(), info.port());
+                String jdbcUrl = info.jdbcUrlWithLocalPort(localPort);
+
+                DataSourceBuilder<?> builder = DataSourceBuilder.create()
+                        .url(jdbcUrl)
+                        .username(info.username())
+                        .password(info.password())
+                        .driverClassName("org.postgresql.Driver");
+
+                DataSource dataSource;
+                if (customizer != null) {
+                    dataSource = customizer.customize(builder, name);
+                } else {
+                    dataSource = builder.build();
+                }
+
+                NamedParameterJdbcTemplate namedTemplate =
+                        new NamedParameterJdbcTemplate(dataSource);
+                SshJdbcTemplate template = new SshJdbcTemplate(namedTemplate);
+                registry.register(name, template);
+                log.info("已注册 SshJdbcTemplate: {}", name);
+            } catch (Exception e) {
+                throw new RuntimeException(
+                        "创建 SshJdbcTemplate 失败 (数据源: " + name + "): " + e.getMessage(), e);
+            }
         }
+
+        // 4. Initialize SshJdbc static facade
+        List<ConnectionInfoResolver> resolvers = resolversOpt.getIfAvailable();
+        SshJdbc.init(registry, resolvers != null ? resolvers : List.of());
 
         return registry;
-    }
-
-    private SshJdbcTemplate createTemplate(
-            String name,
-            ConnectionInfo info,
-            SshTunnelService tunnelService,
-            DataSourceCustomizer customizer) {
-        try {
-            int localPort = tunnelService.createOrGetTunnel(info.host(), info.port());
-            String jdbcUrl = info.jdbcUrlWithLocalPort(localPort);
-
-            DataSourceBuilder<?> builder = DataSourceBuilder.create()
-                    .url(jdbcUrl)
-                    .username(info.username())
-                    .password(info.password())
-                    .driverClassName("org.postgresql.Driver");
-
-            DataSource dataSource;
-            if (customizer != null) {
-                dataSource = customizer.customize(builder, name);
-            } else {
-                dataSource = builder.build();
-            }
-
-            NamedParameterJdbcTemplate namedTemplate =
-                    new NamedParameterJdbcTemplate(dataSource);
-            return new SshJdbcTemplate(namedTemplate);
-
-        } catch (Exception e) {
-            throw new RuntimeException(
-                    "创建 SshJdbcTemplate 失败 (数据源: " + name + "): " + e.getMessage(), e);
-        }
     }
 }

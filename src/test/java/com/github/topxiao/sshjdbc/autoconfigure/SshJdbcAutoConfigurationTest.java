@@ -1,6 +1,8 @@
 package com.github.topxiao.sshjdbc.autoconfigure;
 
+import com.github.topxiao.sshjdbc.context.ConnectionInfoResolver;
 import com.github.topxiao.sshjdbc.context.SshJdbcRegistry;
+import com.github.topxiao.sshjdbc.provider.ConnectionInfo;
 import com.github.topxiao.sshjdbc.provider.ConnectionInfoProvider;
 import com.github.topxiao.sshjdbc.tunnel.SshTunnelService;
 import org.junit.jupiter.api.Test;
@@ -170,6 +172,42 @@ class SshJdbcAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(ConnectionInfoProvider.class);
                     // Registry still created, just empty
+                    assertThat(context).hasSingleBean(SshJdbcRegistry.class);
+                });
+    }
+
+    // ---- ConnectionInfoResolver wiring ----
+
+    @Test
+    void shouldDiscoverConnectionInfoResolverBeans() {
+        ConnectionInfoResolver resolver = ctx ->
+            new ConnectionInfo("10.0.1.100", 5432, "mydb", "user", "pass");
+
+        runner
+                .withPropertyValues(
+                        "ssh-jdbc.tunnel.host=127.0.0.1",
+                        "ssh-jdbc.tunnel.port=22",
+                        "ssh-jdbc.tunnel.user=test",
+                        "ssh-jdbc.tunnel.private-key-path=/tmp/id_rsa"
+                )
+                .withBean(ConnectionInfoResolver.class, () -> resolver)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(ConnectionInfoResolver.class);
+                });
+    }
+
+    @Test
+    void shouldWorkWithoutConnectionInfoResolver() {
+        runner
+                .withPropertyValues(
+                        "ssh-jdbc.tunnel.host=127.0.0.1",
+                        "ssh-jdbc.tunnel.port=22",
+                        "ssh-jdbc.tunnel.user=test",
+                        "ssh-jdbc.tunnel.private-key-path=/tmp/id_rsa"
+                )
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(ConnectionInfoResolver.class);
+                    // Registry still works
                     assertThat(context).hasSingleBean(SshJdbcRegistry.class);
                 });
     }
