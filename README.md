@@ -1,14 +1,15 @@
 # ssh-jdbc-spring-boot-starter
 
-通过 SSH 隧道连接远程数据库的 Spring Boot Starter。
+通过 SSH 隧道连接远程 PostgreSQL 数据库的 Spring Boot Starter。
 
 ## 特性
 
 - 基于 SSH 隧道的 JDBC 连接，无需直连数据库
 - 支持多命名数据源
 - 可插拔的连接信息提供者（动态数据源）
+- 可直接适配应用已有的请求/执行上下文
 - 可自定义 DataSource 构建
-- 隧道缓存、空闲清理、断线重连
+- 隧道缓存、空闲清理
 
 ## 快速开始
 
@@ -27,7 +28,7 @@
 <dependency>
     <groupId>com.github.topxiao</groupId>
     <artifactId>ssh-jdbc-spring-boot-starter</artifactId>
-    <version>v0.1.0</version>
+    <version>v0.4.0</version>
 </dependency>
 ```
 
@@ -40,13 +41,15 @@ ssh-jdbc:
     port: 22
     user: ssh-user
     private-key-path: /path/to/id_rsa
+    # 二选一：固定指纹，或通过 known-hosts-path 指定 known_hosts 文件。
+    host-key-fingerprint: SHA256:replace-with-your-server-fingerprint
   datasources:
     primary:
       host: 10.0.1.100
       port: 5432
       database: mydb
       username: postgres
-      password: secret
+      password: ${DB_PASSWORD}
 ```
 
 ### 3. 使用
@@ -83,13 +86,40 @@ public class MyProvider implements ConnectionInfoProvider {
     @Override
     public Map<String, ConnectionInfo> provide() {
         return Map.of(
-            "dynamic1", new ConnectionInfo("10.0.3.100", 5432, "db1", "user", "pass")
+            "dynamic1", new ConnectionInfo("10.0.3.100", 5432, "db1", "user", dbPassword)
         );
     }
 }
 ```
 
 ## 运行时动态数据源
+
+### 适配应用已有上下文（推荐）
+
+如果应用已经有自己的请求或执行上下文，不需要复制到 starter 的
+`ExecutionContext`。提供一个 `CurrentConnectionInfoProvider` Bean 即可：
+
+```java
+@Bean
+CurrentConnectionInfoProvider currentConnectionInfoProvider(MyContext context) {
+    return () -> {
+        MyDatabaseInfo db = context.currentDatabase();
+        if (db == null) return null;
+        return new ConnectionInfo(
+            db.host(), db.port(), db.database(), db.username(), db.password());
+    };
+}
+```
+
+之后直接使用 starter 门面：
+
+```java
+SshJdbc.getTemplate().update(sql, params);
+JdbcTemplate jdbc = SshJdbc.getJdbcTemplate();
+```
+
+Provider 返回 `null` 时，会继续尝试 starter 自带的
+`ExecutionContext + ConnectionInfoResolver` 兼容链。
 
 ### 动态注册/注销
 
@@ -98,7 +128,7 @@ public class MyProvider implements ConnectionInfoProvider {
 private SshJdbcRegistry registry;
 
 // 动态注册
-ConnectionInfo info = new ConnectionInfo("10.0.3.100", 5432, "newdb", "user", "pass");
+ConnectionInfo info = new ConnectionInfo("10.0.3.100", 5432, "newdb", "user", dbPassword);
 registry.register("dynamic1", info);
 
 // 使用
@@ -130,7 +160,7 @@ public class CorpDatabaseResolver implements ConnectionInfoResolver {
 
 // 2. 使用
 ExecutionContext.builder()
-    .corpCode("midea")
+    .corpCode("acme")
     .put("env", "v4")
     .apply();
 
@@ -142,7 +172,7 @@ List<Map<String, Object>> rows = SshJdbc.queryForList(
 // 或者直接传入完整连接参数
 ExecutionContext.builder()
     .dbHost("10.0.1.100").dbPort(5432)
-    .dbDatabase("mydb").dbUser("postgres").dbPassword("secret")
+    .dbDatabase("mydb").dbUser("postgres").dbPassword(dbPassword)
     .apply();
 
 List<Map<String, Object>> rows = SshJdbc.queryForList("SELECT * FROM t", Map.of());
@@ -167,6 +197,8 @@ List<Map<String, Object>> rows = SshJdbc.queryForList("SELECT * FROM t", Map.of(
 | `SshJdbc.queryForObject(sql, params, type)` | 上下文自动解析 + 单值查询 |
 | `SshJdbc.update(sql, params)` | 上下文自动解析 + 更新 |
 | `SshJdbc.execute(sql)` | 上下文自动解析 + 执行 DDL |
+| `SshJdbc.getTemplate()` | 获取当前连接的 `SshJdbcTemplate` |
+| `SshJdbc.getJdbcTemplate()` | 获取当前连接底层 `JdbcTemplate` |
 | `SshJdbc.getTemplate(name)` | 按名称获取模板 |
 
 ## 自定义 DataSource
@@ -198,6 +230,10 @@ public class MyCustomizer implements DataSourceCustomizer {
 | `ssh-jdbc.tunnel.user` | - | SSH 用户名 |
 | `ssh-jdbc.tunnel.private-key-path` | - | SSH 私钥文件路径 |
 | `ssh-jdbc.tunnel.private-key-passphrase` | - | 私钥密码（可选） |
+| `ssh-jdbc.tunnel.host-key-fingerprint` | - | 推荐：固定的 SSH 主机密钥指纹 |
+| `ssh-jdbc.tunnel.known-hosts-path` | `~/.ssh/known_hosts` | 指定 known_hosts 文件；未配置指纹时使用 |
+| `ssh-jdbc.tunnel.connect-timeout-ms` | 10000 | SSH 建连超时（毫秒） |
+| `ssh-jdbc.tunnel.timeout-ms` | 30000 | SSH Socket 超时（毫秒） |
 | `ssh-jdbc.tunnel.max-connections` | 50 | 最大隧道连接数 |
 | `ssh-jdbc.tunnel.idle-timeout-ms` | 600000 | 空闲超时（毫秒） |
 
@@ -210,6 +246,7 @@ public class MyCustomizer implements DataSourceCustomizer {
 | `ssh-jdbc.datasources.<name>.database` | - | 数据库名 |
 | `ssh-jdbc.datasources.<name>.username` | - | 数据库用户名 |
 | `ssh-jdbc.datasources.<name>.password` | - | 数据库密码 |
+| `ssh-jdbc.max-cached-datasources` | 100 | 最大缓存 DataSource/连接池数量 |
 
 ## SshJdbcTemplate API
 
@@ -245,3 +282,15 @@ Starter 自动配置流程：
 2. 收集 YAML 静态数据源 + `ConnectionInfoProvider` 动态数据源
 3. 为每个数据源建立 SSH 隧道，创建 `SshJdbcTemplate`
 4. 注册到 `SshJdbcRegistry`，按名称获取使用
+
+## 安全说明
+
+- Starter 默认执行 SSH 主机密钥校验，不再接受任意主机密钥。
+- 生产环境推荐配置 `host-key-fingerprint`；也可以配置 `known-hosts-path`。
+- 本地转发端口仅绑定 loopback，不会监听外部网卡。
+- 数据库密码和私钥口令不会出现在配置对象的 `toString()` 中。
+- 密码、私钥口令应通过环境变量或外部密钥管理系统注入，不要写入仓库。
+
+## License
+
+Apache License 2.0，详见 [LICENSE](LICENSE)。

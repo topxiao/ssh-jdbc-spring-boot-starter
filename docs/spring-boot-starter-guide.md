@@ -412,7 +412,7 @@ git commit -m "release: v0.2.0"
 git tag v0.2.0
 
 # 推送代码和 tag
-git push origin main
+git push origin master
 git push origin v0.2.0
 ```
 
@@ -538,7 +538,7 @@ ssh-jdbc:
       port: 5432
       database: mydb
       username: postgres
-      password: secret
+      password: ${DB_PASSWORD}
 ```
 
 ### 9.4 使用 Starter 提供的 Bean
@@ -643,7 +643,7 @@ git commit -m "release: v0.3.0"
 git tag v0.3.0
 
 # 3. 推送
-git push origin main
+git push origin master
 git push origin v0.3.0
 ```
 
@@ -672,7 +672,7 @@ https://jitpack.io/#com.github.topxiao/ssh-jdbc-spring-boot-starter/v0.3.0
 # <version>0.4.0-SNAPSHOT</version>
 git add pom.xml
 git commit -m "chore: bump version to 0.4.0-SNAPSHOT"
-git push origin main
+git push origin master
 ```
 
 ---
@@ -746,7 +746,7 @@ git push origin :refs/tags/v0.1.0
 - [ ] `pom.xml` 版本号不含 `-SNAPSHOT`
 - [ ] `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports` 文件存在且内容正确
 - [ ] `git tag v0.x.0` 已打上
-- [ ] `git push origin main --tags` 已推送
+- [ ] `git push origin master --tags` 已推送
 - [ ] JitPack 页面显示构建成功
 
 ### 用户使用检查
@@ -772,7 +772,7 @@ mvn versions:set -DnewVersion=0.2.0  # 设置版本号
 mvn versions:commit                   # 确认版本号
 git add -A && git commit -m "release: v0.2.0"
 git tag v0.2.0                        # 打 tag
-git push origin main                  # 推送代码
+git push origin master                # 推送代码
 git push origin v0.2.0                # 推送 tag
 
 # ===== 版本管理 =====

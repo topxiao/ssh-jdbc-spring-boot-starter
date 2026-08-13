@@ -15,15 +15,15 @@ class ExecutionContextTest {
     @Test
     void shouldSetAndGetContext() {
         ExecutionContext ctx = ExecutionContext.builder()
-                .corpCode("midea")
+                .corpCode("acme")
                 .apply();
-        assertEquals("midea", ExecutionContext.current().getCorpCode());
+        assertEquals("acme", ExecutionContext.current().getCorpCode());
         assertSame(ctx, ExecutionContext.current());
     }
 
     @Test
     void shouldClearContext() {
-        ExecutionContext.builder().corpCode("midea").apply();
+        ExecutionContext.builder().corpCode("acme").apply();
         ExecutionContext.clear();
         assertNull(ExecutionContext.current());
     }
@@ -36,7 +36,7 @@ class ExecutionContextTest {
     @Test
     void shouldStoreAndRetrieveAttributes() {
         ExecutionContext.builder()
-                .corpCode("midea")
+                .corpCode("acme")
                 .put("env", "v4")
                 .apply();
         assertEquals("v4", ExecutionContext.current().getAttribute("env"));
@@ -58,7 +58,7 @@ class ExecutionContextTest {
     @Test
     void shouldNotHaveFullConnectionInfoWhenPartial() {
         ExecutionContext ctx = ExecutionContext.builder()
-                .corpCode("midea")
+                .corpCode("acme")
                 .put("env", "v4")
                 .build();
         assertFalse(ctx.hasFullConnectionInfo());
@@ -78,7 +78,7 @@ class ExecutionContextTest {
     @Test
     void shouldBuildWithAllDbParams() {
         ExecutionContext ctx = ExecutionContext.builder()
-                .corpCode("midea")
+                .corpCode("acme")
                 .put("env", "v4")
                 .dbHost("10.0.1.100")
                 .dbPort(5432)

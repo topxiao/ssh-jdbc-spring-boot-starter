@@ -17,3 +17,14 @@ Thumbs.db
 *.class
 *.jar
 *.log
+
+# Local secrets and private keys
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore

@@ -3,6 +3,9 @@ package com.github.topxiao.sshjdbc.tunnel;
 import com.github.topxiao.sshjdbc.autoconfigure.SshTunnelProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import net.schmizz.sshj.SSHClient;
+
+import java.net.ServerSocket;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -43,21 +46,10 @@ class SshTunnelServiceTest {
     }
 
     @Test
-    void shouldEnforceMaxConnectionsLimit() {
+    void shouldInitializeIdempotently() {
         service.init();
-        try {
-            IllegalStateException ex = assertThrows(IllegalStateException.class, () -> {
-                // Max is 2, so attempting to create 3 distinct tunnels should fail.
-                // Since we can't actually connect to SSH, we test the limit check indirectly
-                // by verifying the exception message contains the max connections info.
-                throw new IllegalStateException(
-                    "已达到最大 SSH 隧道连接数: " + 2
-                    + "，当前活跃隧道: []");
-            });
-            assertTrue(ex.getMessage().contains("已达到最大 SSH 隧道连接数"));
-        } finally {
-            service.shutdown();
-        }
+        assertDoesNotThrow(service::init);
+        service.shutdown();
     }
 
     @Test
@@ -70,5 +62,24 @@ class SshTunnelServiceTest {
     void shouldBuildTunnelKeyWithDifferentFormats() {
         assertEquals("my-host.example.com:3306", SshTunnelService.buildTunnelKey("my-host.example.com", 3306));
         assertEquals("192.168.1.1:22", SshTunnelService.buildTunnelKey("192.168.1.1", 22));
+    }
+
+    @Test
+    void shouldUsePinnedFingerprintWhenConfigured() throws Exception {
+        SshTunnelProperties props = new SshTunnelProperties();
+        props.setHostKeyFingerprint("SHA256:test");
+        SshTunnelService tunnelService = new SshTunnelService(props);
+        SSHClient ssh = org.mockito.Mockito.mock(SSHClient.class);
+
+        tunnelService.configureHostKeyVerification(ssh);
+
+        org.mockito.Mockito.verify(ssh).addHostKeyVerifier("SHA256:test");
+    }
+
+    @Test
+    void shouldBindForwardingSocketToLoopbackOnly() throws Exception {
+        try (ServerSocket socket = SshTunnelService.createLoopbackServerSocket()) {
+            assertTrue(socket.getInetAddress().isLoopbackAddress());
+        }
     }
 }

@@ -2,6 +2,7 @@ package com.github.topxiao.sshjdbc.context;
 
 import com.github.topxiao.sshjdbc.jdbc.SshJdbcTemplate;
 import com.github.topxiao.sshjdbc.provider.ConnectionInfo;
+import com.github.topxiao.sshjdbc.provider.CurrentConnectionInfoProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -59,11 +60,11 @@ class SshJdbcTest {
 
     @Test
     void shouldResolveViaResolver() {
-        ExecutionContext.builder().corpCode("midea").put("env", "v4").apply();
+        ExecutionContext.builder().corpCode("acme").put("env", "v4").apply();
 
         ConnectionInfo expectedInfo = new ConnectionInfo("10.0.1.100", 5432, "mydb", "user", "pass");
         ConnectionInfoResolver resolver = ctx -> {
-            if ("midea".equals(ctx.getCorpCode())) return expectedInfo;
+            if ("acme".equals(ctx.getCorpCode())) return expectedInfo;
             return null;
         };
         SshJdbc.init(registry, List.of(resolver));
@@ -102,6 +103,26 @@ class SshJdbcTest {
         SshJdbc.init(registry, List.of()); // no resolvers
 
         assertThrows(IllegalStateException.class, SshJdbc::resolveTemplate);
+    }
+
+    @Test
+    void shouldResolveFromApplicationProviderWithoutStarterContext() {
+        ConnectionInfo expectedInfo = new ConnectionInfo(
+                "10.0.3.100", 5432, "appdb", "user", "pass");
+        CurrentConnectionInfoProvider provider = () -> expectedInfo;
+        SshJdbc.init(registry, List.of(), provider);
+        when(registry.getOrCreate(expectedInfo)).thenReturn(mockTemplate);
+
+        assertSame(mockTemplate, SshJdbc.resolveTemplate());
+        verify(registry).getOrCreate(expectedInfo);
+    }
+
+    @Test
+    void shouldFallBackToStarterContextWhenApplicationProviderReturnsNull() {
+        SshJdbc.init(registry, List.of(), () -> null);
+        setupResolvedTemplate();
+
+        assertSame(mockTemplate, SshJdbc.resolveTemplate());
     }
 
     // ---- Static query delegation ----
@@ -161,6 +182,21 @@ class SshJdbcTest {
         when(registry.getTemplate("primary")).thenReturn(mockTemplate);
         SshJdbcTemplate result = SshJdbc.getTemplate("primary");
         assertSame(mockTemplate, result);
+    }
+
+    @Test
+    void shouldExposeResolvedTemplateAndJdbcTemplate() {
+        setupResolvedTemplate();
+
+        assertSame(mockTemplate, SshJdbc.getTemplate());
+        assertSame(jdbcTemplate, SshJdbc.getJdbcTemplate());
+    }
+
+    @Test
+    void shouldFailClearlyBeforeInitialization() {
+        SshJdbc.reset();
+        assertThrows(IllegalStateException.class, SshJdbc::resolveTemplate);
+        assertThrows(IllegalStateException.class, () -> SshJdbc.getTemplate("primary"));
     }
 
     // ---- Helper ----

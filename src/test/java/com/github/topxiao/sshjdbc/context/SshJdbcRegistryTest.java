@@ -28,7 +28,7 @@ class SshJdbcRegistryTest {
     @BeforeEach
     void setUp() throws Exception {
         tunnelService = mock(SshTunnelService.class);
-        when(tunnelService.createOrGetTunnel(anyString(), anyInt())).thenReturn(15432);
+        when(tunnelService.acquireTunnel(anyString(), anyInt())).thenReturn(15432);
         provider = mock(ConnectionInfoProvider.class);
 
         registry = new SshJdbcRegistry(tunnelService, null, provider);
@@ -79,7 +79,7 @@ class SshJdbcRegistryTest {
         assertTrue(registry.getDatasourceNames().contains("dynamic1"));
         SshJdbcTemplate template = registry.getTemplate("dynamic1");
         assertNotNull(template);
-        verify(tunnelService).createOrGetTunnel("10.0.1.100", 5432);
+        verify(tunnelService).acquireTunnel("10.0.1.100", 5432);
     }
 
     @Test
@@ -92,7 +92,8 @@ class SshJdbcRegistryTest {
 
         SshJdbcTemplate template = registry.getTemplate("ds1");
         assertNotNull(template);
-        verify(tunnelService, times(2)).createOrGetTunnel(anyString(), anyInt());
+        verify(tunnelService, times(2)).acquireTunnel(anyString(), anyInt());
+        verify(tunnelService).releaseTunnel("10.0.1.100", 5432);
     }
 
     @Test
@@ -130,7 +131,7 @@ class SshJdbcRegistryTest {
         SshJdbcTemplate template = registry.getOrCreate(info);
 
         assertNotNull(template);
-        verify(tunnelService).createOrGetTunnel("10.0.1.100", 5432);
+        verify(tunnelService).acquireTunnel("10.0.1.100", 5432);
     }
 
     @Test
@@ -141,7 +142,7 @@ class SshJdbcRegistryTest {
         SshJdbcTemplate second = registry.getOrCreate(info);
 
         assertSame(first, second);
-        verify(tunnelService, times(1)).createOrGetTunnel("10.0.1.100", 5432);
+        verify(tunnelService, times(1)).acquireTunnel("10.0.1.100", 5432);
     }
 
     @Test
@@ -155,11 +156,65 @@ class SshJdbcRegistryTest {
     }
 
     @Test
+    void shouldCreateNewTemplateWhenPasswordRotates() throws Exception {
+        ConnectionInfo oldCredentials =
+                new ConnectionInfo("10.0.1.100", 5432, "mydb", "user", "old-pass");
+        ConnectionInfo newCredentials =
+                new ConnectionInfo("10.0.1.100", 5432, "mydb", "user", "new-pass");
+
+        SshJdbcTemplate first = registry.getOrCreate(oldCredentials);
+        SshJdbcTemplate second = registry.getOrCreate(newCredentials);
+
+        assertNotSame(first, second);
+        verify(tunnelService, times(2)).acquireTunnel("10.0.1.100", 5432);
+    }
+
+    @Test
     void shouldThrowWhenGetOrCreateWithoutTunnelService() {
         SshJdbcRegistry basic = new SshJdbcRegistry();
         ConnectionInfo info = new ConnectionInfo("10.0.1.100", 5432, "mydb", "user", "pass");
 
         assertThrows(IllegalStateException.class, () -> basic.getOrCreate(info));
+    }
+
+    @Test
+    void shouldEnforceDatasourceCacheLimit() {
+        SshJdbcRegistry limited = new SshJdbcRegistry(tunnelService, null, null, 1);
+        try {
+            limited.getOrCreate(new ConnectionInfo(
+                    "10.0.1.100", 5432, "db1", "user", "pass"));
+
+            assertThrows(IllegalStateException.class, () -> limited.getOrCreate(
+                    new ConnectionInfo("10.0.1.101", 5432, "db2", "user", "pass")));
+        } finally {
+            limited.shutdown();
+        }
+    }
+
+    @Test
+    void shouldCountNamedTemplatesAgainstDatasourceCacheLimit() {
+        SshJdbcRegistry limited = new SshJdbcRegistry(tunnelService, null, null, 1);
+        try {
+            limited.register("named", primaryTemplate);
+
+            assertThrows(IllegalStateException.class, () -> limited.getOrCreate(
+                    new ConnectionInfo("10.0.1.101", 5432, "db2", "user", "pass")));
+        } finally {
+            limited.shutdown();
+        }
+    }
+
+    @Test
+    void shouldAllowReplacingNamedTemplateAtDatasourceCacheLimit() {
+        SshJdbcRegistry limited = new SshJdbcRegistry(tunnelService, null, null, 1);
+        try {
+            limited.register("named", primaryTemplate);
+
+            assertDoesNotThrow(() -> limited.register("named", secondaryTemplate));
+            assertSame(secondaryTemplate, limited.getTemplate("named"));
+        } finally {
+            limited.shutdown();
+        }
     }
 
     // ---- New: refresh ----
@@ -239,5 +294,15 @@ class SshJdbcRegistryTest {
         registry.register("primary", primaryTemplate);
         registry.register("secondary", secondaryTemplate);
         assertDoesNotThrow(() -> registry.shutdown());
+    }
+
+    @Test
+    void shouldReleaseTunnelLeaseOnUnregister() {
+        ConnectionInfo info = new ConnectionInfo("10.0.1.100", 5432, "mydb", "user", "pass");
+        registry.register("ds1", info);
+
+        registry.unregister("ds1");
+
+        verify(tunnelService).releaseTunnel("10.0.1.100", 5432);
     }
 }

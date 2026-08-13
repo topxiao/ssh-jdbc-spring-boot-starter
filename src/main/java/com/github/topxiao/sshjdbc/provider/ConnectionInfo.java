@@ -33,4 +33,10 @@ public record ConnectionInfo(
     public String jdbcUrlWithLocalPort(int localPort) {
         return "jdbc:postgresql://localhost:" + localPort + "/" + database;
     }
+
+    @Override
+    public String toString() {
+        return "ConnectionInfo[host=" + host + ", port=" + port + ", database=" + database
+                + ", username=" + username + ", password=<redacted>]";
+    }
 }

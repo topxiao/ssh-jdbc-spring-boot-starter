@@ -8,7 +8,6 @@
 #  用法:
 #    ./release.sh <版本号> [选项]
 #    ./release.sh 0.3.0                  # 发布 v0.3.0，自动升级到 0.4.0-SNAPSHOT
-#    ./release.sh 0.3.0 --skip-test      # 跳过测试
 #    ./release.sh 0.3.0 --branch main    # 指定主分支（默认自动检测）
 #    ./release.sh 0.3.0 --no-snapshot    # 发布后不自动升级到下一个 SNAPSHOT
 #
@@ -39,18 +38,22 @@ CUSTOM_BRANCH=""
 # ============================================================
 # 解析参数
 # ============================================================
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    echo "用法: ./release.sh <版本号> [--no-snapshot] [--branch <名>] [--remote <名>]"
+    exit 0
+fi
+
 if [ $# -lt 1 ]; then
     die "用法: ./release.sh <版本号> [选项]
 
 选项:
-  --skip-test       跳过测试
+  --skip-test       禁止使用（公开发布必须运行完整验证）
   --no-snapshot     发布后不自动创建下一个 SNAPSHOT 版本
   --branch <名>     指定主分支（默认自动检测）
   --remote <名>     指定 git remote（默认 origin）
 
 示例:
   ./release.sh 0.3.0
-  ./release.sh 1.0.0 --skip-test
   ./release.sh 2.0.0 --branch main --no-snapshot"
 fi
 
@@ -58,12 +61,12 @@ RELEASE_VERSION="$1"
 shift
 while [ $# -gt 0 ]; do
     case "$1" in
-        --skip-test)    SKIP_TEST=true ;;
+        --skip-test)    die "公开发布禁止跳过测试" ;;
         --no-snapshot)  NO_SNAPSHOT=true ;;
         --branch)       shift; CUSTOM_BRANCH="$1" ;;
         --remote)       shift; GIT_REMOTE="$1" ;;
         -h|--help)
-            echo "用法: ./release.sh <版本号> [--skip-test] [--no-snapshot] [--branch <名>] [--remote <名>]"
+            echo "用法: ./release.sh <版本号> [--no-snapshot] [--branch <名>] [--remote <名>]"
             exit 0 ;;
         *) die "未知参数: $1" ;;
     esac
@@ -186,7 +189,7 @@ if [ "$CURRENT_BRANCH" != "$MAIN_BRANCH" ]; then
 fi
 ok "当前分支: ${CURRENT_BRANCH}"
 
-if ! git diff --quiet || ! git diff --cached --quiet; then
+if [ -n "$(git status --porcelain)" ]; then
     die "工作区有未提交的变更，请先提交或 stash
   git status 查看详情
   git stash 暂存变更"
@@ -216,16 +219,11 @@ echo ""
 # ============================================================
 info "Step 2/6: 运行测试"
 
-if [ "$SKIP_TEST" = true ]; then
-    warn "已跳过测试 (--skip-test)"
+info "执行 mvn clean verify ..."
+if mvn clean verify; then
+    ok "全部验证通过"
 else
-    info "执行 mvn test ..."
-    if mvn test; then
-        ok "全部测试通过"
-    else
-        die "测试失败！请修复后再发布
-  跳过测试发布: ./release.sh ${RELEASE_VERSION} --skip-test"
-    fi
+    die "验证失败！请修复后再发布；公开发布不允许跳过测试"
 fi
 echo ""
 
@@ -267,13 +265,9 @@ echo ""
 # ============================================================
 info "Step 4/6: 推送到远程"
 
-info "推送 ${MAIN_BRANCH} 分支..."
-git push "$GIT_REMOTE" "$MAIN_BRANCH"
-ok "${MAIN_BRANCH} 分支已推送"
-
-info "推送 tag ${TAG}..."
-git push "$GIT_REMOTE" "$TAG"
-ok "Tag ${TAG} 已推送"
+info "原子推送 ${MAIN_BRANCH} 和 ${TAG}..."
+git push --atomic "$GIT_REMOTE" "$MAIN_BRANCH" "$TAG"
+ok "${MAIN_BRANCH} 和 ${TAG} 已原子推送"
 echo ""
 
 # ============================================================
@@ -317,13 +311,17 @@ if [ -n "$GH_USER" ] && [ -n "$REPO_NAME" ]; then
     # 触发构建
     if command -v curl > /dev/null 2>&1; then
         info "正在触发 JitPack 构建..."
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            "https://jitpack.io/${JITPACK_GROUP}/${REPO_NAME}/${TAG}/${REPO_NAME}-${TAG}.pom" 2>/dev/null || echo "000")
-        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "404" ]; then
-            ok "已触发 JitPack 构建请求 (HTTP ${HTTP_CODE})"
-        else
-            warn "JitPack 返回 HTTP ${HTTP_CODE}，请手动检查"
-        fi
+        JITPACK_GROUP_PATH="${JITPACK_GROUP//./\/}"
+        ARTIFACT_URL="https://jitpack.io/${JITPACK_GROUP_PATH}/${REPO_NAME}/${TAG}/${REPO_NAME}-${TAG}.pom"
+        HTTP_CODE="000"
+        for attempt in $(seq 1 18); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$ARTIFACT_URL" 2>/dev/null || echo "000")
+            [ "$HTTP_CODE" = "200" ] && break
+            info "JitPack 构建中 (${attempt}/18, HTTP ${HTTP_CODE})..."
+            sleep 10
+        done
+        [ "$HTTP_CODE" = "200" ] || die "JitPack 产物不可用 (HTTP ${HTTP_CODE})，发布未完成"
+        ok "JitPack 构建产物可用 (HTTP 200)"
     else
         warn "未找到 curl，请在浏览器打开上面的链接触发构建"
     fi

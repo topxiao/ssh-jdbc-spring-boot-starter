@@ -22,32 +22,58 @@ import java.util.concurrent.ConcurrentHashMap;
 public class SshJdbcRegistry {
 
     private final Map<String, SshJdbcTemplate> templates = new ConcurrentHashMap<>();
-    private final Map<String, SshJdbcTemplate> cacheKeyTemplates = new ConcurrentHashMap<>();
+    private final Map<ConnectionInfo, SshJdbcTemplate> connectionTemplates = new ConcurrentHashMap<>();
     private final Map<String, ConnectionInfo> connectionInfos = new ConcurrentHashMap<>();
     private final Set<String> providerManagedNames = ConcurrentHashMap.newKeySet();
+    private final Map<SshJdbcTemplate, ConnectionInfo> templateConnectionInfos =
+            Collections.synchronizedMap(new IdentityHashMap<>());
 
     private final SshTunnelService tunnelService;
     private final DataSourceCustomizer customizer;
     private final ConnectionInfoProvider provider;
+    private final int maxCachedDatasources;
 
     /** Basic constructor — supports named register/get only. */
     public SshJdbcRegistry() {
-        this(null, null, null);
+        this(null, null, null, 100);
     }
 
     /** Full constructor — supports all dynamic operations. */
     public SshJdbcRegistry(SshTunnelService tunnelService,
                            DataSourceCustomizer customizer,
                            ConnectionInfoProvider provider) {
+        this(tunnelService, customizer, provider, 100);
+    }
+
+    public SshJdbcRegistry(SshTunnelService tunnelService,
+                           DataSourceCustomizer customizer,
+                           ConnectionInfoProvider provider,
+                           int maxCachedDatasources) {
         this.tunnelService = tunnelService;
         this.customizer = customizer;
         this.provider = provider;
+        if (maxCachedDatasources <= 0) {
+            throw new IllegalArgumentException("maxCachedDatasources must be greater than zero");
+        }
+        this.maxCachedDatasources = maxCachedDatasources;
     }
 
     // ---- Named access (existing, backward-compatible) ----
 
     public void register(String name, SshJdbcTemplate template) {
-        templates.put(name, template);
+        synchronized (templates) {
+            if (!templates.containsKey(name) && !containsTemplate(template)) {
+                ensureCapacity();
+            }
+            SshJdbcTemplate old = templates.put(name, template);
+            ConnectionInfo oldInfo = connectionInfos.remove(name);
+            if (oldInfo != null && old != null) {
+                connectionTemplates.remove(oldInfo, old);
+            }
+            if (old != null && old != template) {
+                closeDataSource(old);
+            }
+        }
     }
 
     public SshJdbcTemplate getTemplate(String datasourceName) {
@@ -74,22 +100,26 @@ public class SshJdbcRegistry {
     public void register(String name, ConnectionInfo info) {
         requireTunnelService("register");
         synchronized (templates) {
-            // Close old if replacing
-            SshJdbcTemplate old = templates.get(name);
-            if (old != null) {
-                closeDataSource(old);
-                ConnectionInfo oldInfo = connectionInfos.get(name);
-                if (oldInfo != null) {
-                    cacheKeyTemplates.remove(oldInfo.cacheKey());
-                }
-            }
-
+            ensureCapacityForNewName(name);
+            // Build first so a failed replacement leaves the current datasource usable.
             SshJdbcTemplate template = createTemplate(name, info);
-            templates.put(name, template);
-            cacheKeyTemplates.put(info.cacheKey(), template);
-            connectionInfos.put(name, info);
+            SshJdbcTemplate old = templates.put(name, template);
+            ConnectionInfo oldInfo = connectionInfos.put(name, info);
+            connectionTemplates.put(info, template);
+            if (old != null && old != template) {
+                if (oldInfo != null) {
+                    connectionTemplates.remove(oldInfo, old);
+                }
+                closeDataSource(old);
+            }
             log.info("动态注册数据源: {}", name);
         }
+    }
+
+    /** Register a datasource owned by ConnectionInfoProvider refresh lifecycle. */
+    public void registerProviderManaged(String name, ConnectionInfo info) {
+        register(name, info);
+        providerManagedNames.add(name);
     }
 
     /** Remove a datasource by name, closing its DataSource. */
@@ -101,7 +131,7 @@ public class SshJdbcRegistry {
             }
             ConnectionInfo info = connectionInfos.remove(name);
             if (info != null) {
-                cacheKeyTemplates.remove(info.cacheKey());
+                connectionTemplates.remove(info, removed);
             }
             providerManagedNames.remove(name);
             closeDataSource(removed);
@@ -111,24 +141,23 @@ public class SshJdbcRegistry {
 
     // ---- Cache-based lookup ----
 
-    /** Get or create a template by ConnectionInfo, cached by cacheKey. */
+    /** Get or create a template by the complete ConnectionInfo, including credentials. */
     public SshJdbcTemplate getOrCreate(ConnectionInfo info) {
         requireTunnelService("getOrCreate");
-        String cacheKey = info.cacheKey();
-
-        SshJdbcTemplate existing = cacheKeyTemplates.get(cacheKey);
+        SshJdbcTemplate existing = connectionTemplates.get(info);
         if (existing != null) {
             return existing;
         }
 
         synchronized (templates) {
-            existing = cacheKeyTemplates.get(cacheKey);
+            existing = connectionTemplates.get(info);
             if (existing != null) {
                 return existing;
             }
-            SshJdbcTemplate template = createTemplate(cacheKey, info);
-            cacheKeyTemplates.put(cacheKey, template);
-            log.debug("按需创建模板: {}", cacheKey);
+            ensureCapacity();
+            SshJdbcTemplate template = createTemplate(info.cacheKey(), info);
+            connectionTemplates.put(info, template);
+            log.debug("按需创建模板: {}", info.cacheKey());
             return template;
         }
     }
@@ -177,34 +206,35 @@ public class SshJdbcRegistry {
 
     /** Close all DataSources on shutdown. */
     public void shutdown() {
-        for (SshJdbcTemplate template : templates.values()) {
-            closeDataSource(template);
-        }
-        for (SshJdbcTemplate template : cacheKeyTemplates.values()) {
+        Set<SshJdbcTemplate> unique = Collections.newSetFromMap(new IdentityHashMap<>());
+        unique.addAll(templates.values());
+        unique.addAll(connectionTemplates.values());
+        for (SshJdbcTemplate template : unique) {
             closeDataSource(template);
         }
         templates.clear();
-        cacheKeyTemplates.clear();
+        connectionTemplates.clear();
         connectionInfos.clear();
         providerManagedNames.clear();
+        templateConnectionInfos.clear();
+        SshJdbc.clear(this);
         log.info("SshJdbcRegistry 已关闭");
     }
 
     // ---- Internal helpers ----
 
     private void registerInternal(String name, ConnectionInfo info) {
-        SshJdbcTemplate old = templates.get(name);
-        if (old != null) {
-            closeDataSource(old);
-            ConnectionInfo oldInfo = connectionInfos.get(name);
-            if (oldInfo != null) {
-                cacheKeyTemplates.remove(oldInfo.cacheKey());
-            }
-        }
+        ensureCapacityForNewName(name);
         SshJdbcTemplate template = createTemplate(name, info);
-        templates.put(name, template);
-        cacheKeyTemplates.put(info.cacheKey(), template);
-        connectionInfos.put(name, info);
+        SshJdbcTemplate old = templates.put(name, template);
+        ConnectionInfo oldInfo = connectionInfos.put(name, info);
+        connectionTemplates.put(info, template);
+        if (old != null && old != template) {
+            if (oldInfo != null) {
+                connectionTemplates.remove(oldInfo, old);
+            }
+            closeDataSource(old);
+        }
         log.info("注册数据源: {}", name);
     }
 
@@ -214,7 +244,7 @@ public class SshJdbcRegistry {
             closeDataSource(removed);
             ConnectionInfo info = connectionInfos.remove(name);
             if (info != null) {
-                cacheKeyTemplates.remove(info.cacheKey());
+                connectionTemplates.remove(info, removed);
             }
         }
         providerManagedNames.remove(name);
@@ -222,8 +252,10 @@ public class SshJdbcRegistry {
     }
 
     private SshJdbcTemplate createTemplate(String name, ConnectionInfo info) {
+        boolean tunnelAcquired = false;
         try {
-            int localPort = tunnelService.createOrGetTunnel(info.host(), info.port());
+            int localPort = tunnelService.acquireTunnel(info.host(), info.port());
+            tunnelAcquired = true;
             String jdbcUrl = info.jdbcUrlWithLocalPort(localPort);
 
             DataSourceBuilder<?> builder = DataSourceBuilder.create()
@@ -241,9 +273,14 @@ public class SshJdbcRegistry {
 
             NamedParameterJdbcTemplate namedTemplate =
                     new NamedParameterJdbcTemplate(dataSource);
-            return new SshJdbcTemplate(namedTemplate);
+            SshJdbcTemplate template = new SshJdbcTemplate(namedTemplate);
+            templateConnectionInfos.put(template, info);
+            return template;
 
         } catch (Exception e) {
+            if (tunnelAcquired) {
+                tunnelService.releaseTunnel(info.host(), info.port());
+            }
             throw new RuntimeException(
                     "创建 SshJdbcTemplate 失败 (数据源: " + name + "): " + e.getMessage(), e);
         }
@@ -251,12 +288,20 @@ public class SshJdbcRegistry {
 
     private void closeDataSource(SshJdbcTemplate template) {
         try {
+            if (template == null || template.getJdbcTemplate() == null) {
+                return;
+            }
             DataSource ds = template.getJdbcTemplate().getDataSource();
             if (ds instanceof AutoCloseable closeable) {
                 closeable.close();
             }
         } catch (Exception e) {
             log.warn("关闭 DataSource 失败", e);
+        } finally {
+            ConnectionInfo info = templateConnectionInfos.remove(template);
+            if (info != null && tunnelService != null) {
+                tunnelService.releaseTunnel(info.host(), info.port());
+            }
         }
     }
 
@@ -264,6 +309,36 @@ public class SshJdbcRegistry {
         if (tunnelService == null) {
             throw new IllegalStateException(
                 "Registry 未配置 SshTunnelService，不支持 " + operation + " 操作");
+        }
+    }
+
+    private void ensureCapacityForNewName(String name) {
+        if (!templates.containsKey(name)) {
+            ensureCapacity();
+        }
+    }
+
+    private boolean containsTemplate(SshJdbcTemplate candidate) {
+        for (SshJdbcTemplate template : templates.values()) {
+            if (template == candidate) {
+                return true;
+            }
+        }
+        for (SshJdbcTemplate template : connectionTemplates.values()) {
+            if (template == candidate) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void ensureCapacity() {
+        Set<SshJdbcTemplate> unique = Collections.newSetFromMap(new IdentityHashMap<>());
+        unique.addAll(templates.values());
+        unique.addAll(connectionTemplates.values());
+        if (unique.size() >= maxCachedDatasources) {
+            throw new IllegalStateException(
+                    "已达到最大 DataSource 缓存数: " + maxCachedDatasources);
         }
     }
 }

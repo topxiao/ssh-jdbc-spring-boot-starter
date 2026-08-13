@@ -32,4 +32,12 @@ class ConnectionInfoTest {
         ConnectionInfo info = new ConnectionInfo("10.0.1.100", 5432, "mydb", "postgres", "secret");
         assertEquals("jdbc:postgresql://localhost:12345/mydb", info.jdbcUrlWithLocalPort(12345));
     }
+
+    @Test
+    void shouldRedactPasswordFromStringRepresentation() {
+        ConnectionInfo info = new ConnectionInfo("10.0.1.100", 5432, "mydb", "postgres", "secret");
+
+        assertFalse(info.toString().contains("secret"));
+        assertTrue(info.toString().contains("<redacted>"));
+    }
 }

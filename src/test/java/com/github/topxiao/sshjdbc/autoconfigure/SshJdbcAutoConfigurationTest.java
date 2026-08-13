@@ -4,6 +4,7 @@ import com.github.topxiao.sshjdbc.context.ConnectionInfoResolver;
 import com.github.topxiao.sshjdbc.context.SshJdbcRegistry;
 import com.github.topxiao.sshjdbc.provider.ConnectionInfo;
 import com.github.topxiao.sshjdbc.provider.ConnectionInfoProvider;
+import com.github.topxiao.sshjdbc.provider.CurrentConnectionInfoProvider;
 import com.github.topxiao.sshjdbc.tunnel.SshTunnelService;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -70,6 +71,9 @@ class SshJdbcAutoConfigurationTest {
                         "ssh-jdbc.tunnel.user=deploy",
                         "ssh-jdbc.tunnel.private-key-path=/home/deploy/.ssh/id_ed25519",
                         "ssh-jdbc.tunnel.private-key-passphrase=s3cret",
+                        "ssh-jdbc.tunnel.host-key-fingerprint=SHA256:test",
+                        "ssh-jdbc.tunnel.connect-timeout-ms=5000",
+                        "ssh-jdbc.tunnel.timeout-ms=15000",
                         "ssh-jdbc.tunnel.max-connections=10",
                         "ssh-jdbc.tunnel.idle-timeout-ms=300000"
                 )
@@ -82,6 +86,10 @@ class SshJdbcAutoConfigurationTest {
                     assertThat(props.getPrivateKeyPath())
                             .isEqualTo("/home/deploy/.ssh/id_ed25519");
                     assertThat(props.getPrivateKeyPassphrase()).isEqualTo("s3cret");
+                    assertThat(props.getHostKeyFingerprint()).isEqualTo("SHA256:test");
+                    assertThat(props.getConnectTimeoutMs()).isEqualTo(5_000);
+                    assertThat(props.getTimeoutMs()).isEqualTo(15_000);
+                    assertThat(props.toString()).doesNotContain("s3cret");
                     assertThat(props.getMaxConnections()).isEqualTo(10);
                     assertThat(props.getIdleTimeoutMs()).isEqualTo(300_000L);
                 });
@@ -174,6 +182,22 @@ class SshJdbcAutoConfigurationTest {
                     // Registry still created, just empty
                     assertThat(context).hasSingleBean(SshJdbcRegistry.class);
                 });
+    }
+
+    @Test
+    void shouldDiscoverCurrentConnectionInfoProvider() {
+        CurrentConnectionInfoProvider provider = () ->
+                new ConnectionInfo("10.0.1.100", 5432, "mydb", "user", "pass");
+
+        runner
+                .withPropertyValues(
+                        "ssh-jdbc.tunnel.host=127.0.0.1",
+                        "ssh-jdbc.tunnel.user=test",
+                        "ssh-jdbc.tunnel.private-key-path=/tmp/id_rsa"
+                )
+                .withBean(CurrentConnectionInfoProvider.class, () -> provider)
+                .run(context -> assertThat(context)
+                        .hasSingleBean(CurrentConnectionInfoProvider.class));
     }
 
     // ---- ConnectionInfoResolver wiring ----
